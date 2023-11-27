@@ -16,7 +16,8 @@ import time
 import board
 import adafruit_lis3mdl
 import adafruit_lsm6ds.lsm6dsox
-from PiFinder.gamblor21_ahrs import mahony # 9dof sensor fusion library
+from adafruit_lsm6ds import Rate, AccelRange, GyroRange
+from PiFinder.gamblor21_ahrs import madgwick # 9dof sensor fusion library
 
 from scipy.spatial.transform import Rotation
 
@@ -25,16 +26,20 @@ from PiFinder import config
 QUEUE_LEN = 10
 MOVE_CHECK_LEN = 2
 
+RAD_TO_DEGREE_MULTIPLIER = 180 / 3.14159265
+
 
 class Imu:
     def __init__(self):
         i2c = board.I2C()
         self.accelgyro = adafruit_lsm6ds.lsm6dsox.LSM6DSOX(i2c)
+	self.accelgyro.gyro_data_rate = Rate.RATE_104_HZ 
         self.magnetometer = adafruit_lis3mdl.LIS3MDL(i2c)
         
-        self.imu_sample_period = 1 / 30
+        self.imu_sample_period = 1 / 104
 
-        self.filter = mahony.Mahony(Kp=0.05, Ki=0.0, sample_freq=1.0/self.imu_sample_period)
+        # self.filter = mahony.mahony(Kp=0.05, Ki=0.0, sample_freq=1.0/self.imu_sample_period)
+        self.filter = madgwick.Madgwick(beta=0.003, sample_freq=1.0/self.imu_sample_period)
 
         # used in self.remap_axes()
         self.remap_flat = False
@@ -58,13 +63,14 @@ class Imu:
         self.gyro_samples = 0
         self._last_accel = (0,0,0)
 
-        self.magnetom_min = [-90.07600116924876, -26.074247296112247, -53.785442852966966]
-        self.magnetom_max = [-3.8439052908506284, 62.84712072493422, 33.0751242326805]
+        # Remember, these are already remapped
+        self.magnetom_min = [-90.76293481438175, -24.188833674364222, -55.99239988307513]
+        self.magnetom_max = [-7.439345220695703, 62.890967553346975, 32.51973107278573]
 
         # First value is delta to exceed between samples
         # to start moving, second is threshold to fall below
         # to stop moving.
-        self.__moving_threshold = (0.001, 0.0005)
+        self.__moving_threshold = (0.00001, 0.000009)
 
     def remap_axes(self, triple):
         x,y,z = triple
@@ -139,7 +145,7 @@ class Imu:
             # use accelerometer to determine when we're not moving
             # take squared magnitude of acceleration difference
             accel_diff = sum([(current_accel[x] - self._last_accel[x])**2 for x in range(3)])
-            if accel_diff < self.__moving_threshold[1]:
+            if accel_diff < 0.001:
                 # take a gyro reading to calibrate
 
                 gx, gy, gz = self.remap_axes(self.accelgyro.gyro)
@@ -152,7 +158,9 @@ class Imu:
             self._last_accel = current_accel
             
             if self.gyro_samples > 100:
+                
                 print(f"Gyro calibrated to {self.gyro_xavg/self.gyro_samples}, {self.gyro_yavg/self.gyro_samples}, {self.gyro_zavg/self.gyro_samples} average")
+                print((self.gyro_xavg, self.gyro_yavg, self.gyro_zavg, self.gyro_samples))
                 # signal done with gyro calibration
                 self.calibration = 3
 
@@ -175,7 +183,9 @@ class Imu:
 
         # compute quat
         ax,ay,az = self.remap_axes(self.accelgyro.acceleration)
-        gx, gy, gz = self.remap_axes(self.accelgyro.gyro)
+
+        graw = self.remap_axes(self.accelgyro.gyro)
+        gx, gy, gz = graw
         mx, my, mz = self.remap_axes(self.magnetometer.magnetic)
 
         # apply gyro calibration
@@ -183,13 +193,23 @@ class Imu:
         gy -= self.gyro_yavg/self.gyro_samples
         gz -= self.gyro_zavg/self.gyro_samples
 
+        # gyro is in rads/s and mahony expects degrees/s
+        gx *= RAD_TO_DEGREE_MULTIPLIER
+        gy *= RAD_TO_DEGREE_MULTIPLIER
+        gz *= RAD_TO_DEGREE_MULTIPLIER
+
         # apply magnetometer calibration
-        mx = self.map_range(mx, self.magnetom_min[0], self.magnetom_max[0], -1, 1)
-        my = self.map_range(my, self.magnetom_min[1], self.magnetom_max[1], -1, 1)
-        mz = self.map_range(mz, self.magnetom_min[2], self.magnetom_max[2], -1, 1)
+        # assuming the  magnetometer range is a circle, the center should be right in between the max and min
+        mx -= (self.magnetom_min[0] + self.magnetom_max[0])/2 
+        my -= (self.magnetom_min[1] + self.magnetom_max[1])/2 
+        mz -= (self.magnetom_min[2] + self.magnetom_max[2])/2 
+
+        #mx = self.map_range(mx, self.magnetom_min[0], self.magnetom_max[0], -1, 1)
+        #my = self.map_range(my, self.magnetom_min[1], self.magnetom_max[1], -1, 1)
+        #mz = self.map_range(mz, self.magnetom_min[2], self.magnetom_max[2], -1, 1)
+        
         # keep calibrating magnetometer the more it moves
         self.take_magnetometer_calibrating_measurement()
-
 
         # update orientation
         self.filter.update(gx, gy, gz, ax, ay, az, mx, my, mz)
@@ -197,9 +217,10 @@ class Imu:
         quat = (self.filter.q0, self.filter.q1, self.filter.q2, self.filter.q3)
 
 
-        if self.num_updates % 30 == 0:
+        if self.num_updates % 30 == 0 and False:
             print(("A",ax,ay,az))
-            print(("G",gx,gy,gz))
+            print(("Graw",graw))
+            print(("Gdeg",gx,gy,gz))
             print(("M",mx,my,mz))
             print(("Q",quat))
 
@@ -209,9 +230,10 @@ class Imu:
 
         _quat_diff = []
         for i in range(4):
-            _quat_diff.append(abs(quat[i] - self.quat_history[-1][i]))
+            _quat_diff.append( (quat[i] - self.quat_history[-1][i])**2)
 
-        self.__reading_diff = sum(_quat_diff)   
+        self.__reading_sqdiff = sum(_quat_diff)
+        #print(f"Reading sqdiff: {self.__reading_diff}")
 
         self.avg_quat = quat
         if len(self.quat_history) == QUEUE_LEN:
@@ -219,14 +241,15 @@ class Imu:
         self.quat_history.append(quat)
 
         if self.__moving:
-            if self.__reading_diff < self.__moving_threshold[1]:
+            if self.__reading_sqdiff < self.__moving_threshold[1]:
                 self.__moving = False
         else:
-            if self.__reading_diff > self.__moving_threshold[0]:
+            if self.__reading_sqdiff > self.__moving_threshold[0]:
                 self.__moving = True
 
     def get_euler(self):
-        return list(self.quat_to_euler(self.avg_quat))
+        return self.remap_axes((self.filter.roll * RAD_TO_DEGREE_MULTIPLIER + 180, self.filter.pitch * RAD_TO_DEGREE_MULTIPLIER + 180, self.filter.yaw * RAD_TO_DEGREE_MULTIPLIER + 180))
+        #return list(self.quat_to_euler(self.avg_quat))
 
 
 def imu_monitor(shared_state, console_queue):
@@ -267,3 +290,4 @@ def imu_monitor(shared_state, console_queue):
 
         if shared_state != None and imu_calibrated:
             shared_state.set_imu(imu_data)
+
