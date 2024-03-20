@@ -798,7 +798,7 @@ if __name__ == "__main__":
 
     if args.camera.lower() == "pi":
         rlogger.info("using pi camera")
-        from PiFinder import camera_pi as camera
+        from PiFinder import camera_pi_imx462_12mmlens as camera
     elif args.camera.lower() == "debug":
         rlogger.info("using debug camera")
         from PiFinder import camera_debug as camera  # type: ignore[no-redef]
