@@ -8,20 +8,21 @@ This module is the camera
 * Takes full res images on demand
 
 """
-import os
-import queue
-import time
+
 from PIL import Image
 from PiFinder import config
-from PiFinder import utils
 from PiFinder.camera_interface import CameraInterface
 from typing import Tuple
+import logging
+from PiFinder.multiproclogging import MultiprocLogging
+
+logger = logging.getLogger("Camera.Pi")
 
 
 class CameraPI(CameraInterface):
     """The camera class for PI cameras.  Implements the CameraInterface interface."""
 
-    def __init__(self, exposure_time, gain) -> None:
+    def __init__(self, exposure_time) -> None:
         from picamera2 import Picamera2
 
         self.camera = Picamera2()
@@ -29,7 +30,7 @@ class CameraPI(CameraInterface):
         self.camera_type = "hq"
         self.camType = f"PI {self.camera_type}"
         self.exposure_time = exposure_time
-        self.gain = gain
+        self.gain = 15
         self.initialize()
 
     def initialize(self) -> None:
@@ -54,8 +55,8 @@ class CameraPI(CameraInterface):
         #crop_width = desired_fov / camera_fov * img.size[0]
         #crop_height = crop_width
 
-        crop_width = 747 # desired_fov / camera_fov * img.size[0]
-        crop_height = 747
+        crop_width = 748 # desired_fov / camera_fov * img.size[0]
+        crop_height = 748
         w_margin_size = int((w - crop_width) / 2) # assuming we have an image of size crop_size in the center, how much extra margin is there on either side of the image?
         h_margin_size = int((h - crop_height) / 2) 
         
@@ -87,16 +88,16 @@ class CameraPI(CameraInterface):
         return self.camType
 
 
-def get_images(shared_state, camera_image, command_queue, console_queue):
+def get_images(shared_state, camera_image, command_queue, console_queue, log_queue):
     """
     Instantiates the camera hardware
     then calls the universal image loop
     """
+    MultiprocLogging.configurer(log_queue)
 
     cfg = config.Config()
     exposure_time = cfg.get_option("camera_exp")
-    gain = cfg.get_option("camera_gain")
-    camera_hardware = CameraPI(exposure_time, gain)
+    camera_hardware = CameraPI(exposure_time)
     camera_hardware.get_image_loop(
         shared_state, camera_image, command_queue, console_queue, cfg
     )
